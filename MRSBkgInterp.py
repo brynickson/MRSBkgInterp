@@ -11,13 +11,11 @@ import polarTransform
 # 3rd Party Imports
 from matplotlib import pyplot as plt
 from scipy.signal import convolve2d
-from astropy.coordinates import Angle
-
 
 
 class MRSBkgInterp():
     """
-    This class attempts to compute a reasonable background estimation for JWST MIRI MRS data cubes. It uses a 
+    This class attempts to compute a reasonable background estimation for JWST MIRI MRS data cubes. It uses a
     combination of interpolation and polynomial fitting methods to calculate the background.
     """
 
@@ -63,7 +61,6 @@ class MRSBkgInterp():
 
         self.bkg_mode = 'simple'
         self.degree = 3
-
 
         self.v_wht = 1.0
         self.h_wht = 1.0
