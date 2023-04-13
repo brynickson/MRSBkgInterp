@@ -11,11 +11,13 @@ import polarTransform
 # 3rd Party Imports
 from matplotlib import pyplot as plt
 from scipy.signal import convolve2d
+from astropy.coordinates import Angle
+
 
 
 class MRSBkgInterp():
     """
-    This class attempts to compute a reasonable background estimation for JWST MIRI MRS data cubes. It uses a
+    This class attempts to compute a reasonable background estimation for JWST MIRI MRS data cubes. It uses a 
     combination of interpolation and polynomial fitting methods to calculate the background.
     """
 
@@ -61,6 +63,7 @@ class MRSBkgInterp():
 
         self.bkg_mode = 'simple'
         self.degree = 3
+
 
         self.v_wht = 1.0
         self.h_wht = 1.0
@@ -306,20 +309,20 @@ class MRSBkgInterp():
         combo : ndarray
             The 3D combined normalized background cube.
         """
-        # find maximum and minimum values of the backgrounds
-        polymax = np.max(bkg_poly)
-        polymin = np.nanmin(bkg_poly)
-        simplemax = np.max(bkg_simple)
-        simplemin = np.nanmin(bkg_simple)
+        polymax = np.max(bkg_poly, axis=(1, 2))
+        polymin = np.nanmin(bkg_poly, axis=(1, 2))
+        simplemax = np.max(bkg_simple, axis=(1, 2))
+        simplemin = np.nanmin(bkg_simple, axis=(1, 2))
 
         # normalize the backgrounds based on their max and min values
-        norm1 = (bkg_poly - polymin) / (polymax - polymin)
-        norm2 = (bkg_simple - simplemin) / (simplemax - simplemin)
+        norm1 = (bkg_poly - polymin[:, np.newaxis, np.newaxis]) / (
+                polymax[:, np.newaxis, np.newaxis] - polymin[:, np.newaxis, np.newaxis])
+        norm2 = (bkg_simple - simplemin[:, np.newaxis, np.newaxis]) / (
+                    simplemax[:, np.newaxis, np.newaxis] - simplemin[:, np.newaxis, np.newaxis])
 
         # combine the normalized polynomial and simple backgrounds and scale by the polynomial maxmimum
         combo = (norm1 * norm2)
-        combo *= polymax
-
+        combo *= polymax[:, np.newaxis, np.newaxis]
         return combo
 
     def simple_median_bkg(self, data, v_wht=1., h_wht=1.):
