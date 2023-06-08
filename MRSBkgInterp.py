@@ -55,7 +55,7 @@ class MRSBkgInterp():
         Value by which to weight the row and column arrays when bkg_mode = "simple" (*_s) or
         "polynomial" (*_p). Default is (1.0, 1.0).
     amp : float
-        ?
+        Amplitude factor by which to amplify the background. Default is 1.
     kernel : ndarray
         A 2D array of size (3,3) to use in convolving the masked background cube. If set to "None" the masked
         background cube will not be convolved.
@@ -100,6 +100,8 @@ class MRSBkgInterp():
 
         if self.kernel is not None:
             is_kernel = True
+        else:
+            is_kernel = False
 
         print(f"Source Masking: {self.mask_type}\n"
               f"    Center: {self.src_x, self.src_y}")
@@ -112,10 +114,10 @@ class MRSBkgInterp():
         print(f"    Annulus width: {self.ann_width}\n"
               f"Background Mode: {self.bkg_mode}")
         if self.bkg_mode == 'simple':
-              print(f"    h_wht_s, v_wht_s: {self.h_wht_s, self.v_wht_s}")
+            print(f"    h_wht_s, v_wht_s: {self.h_wht_s, self.v_wht_s}")
         elif self.bkg_mode == 'polynomial':
             print(f"    h_wht_p, v_wht_p: {self.h_wht_p, self.v_wht_p}")
-        print(f"    amp: {self.amp}\n "
+        print(f"    amp: {self.amp}\n"
               f"    Convolution: {is_kernel}\n"
               f"    combine_fits: {self.combine_fits}\n")
 
@@ -179,7 +181,6 @@ class MRSBkgInterp():
         """
         # Convert the input data from Cartesian to polar coordinates, specifying the source as the origin of the
         # polar coordinate system.
-        cartesian_data = data.copy()
         polarImage, ptSettings = polarTransform.convertToPolarImage(data, center=center)
 
         m, n = polarImage.shape
@@ -242,7 +243,7 @@ class MRSBkgInterp():
         conv_bkg : ndarray
             The 3D output data cube after applying the mask and convolution.
         """
-        dithers = [] # List of masked data for each dither.
+        dithers = []  # List of masked data for each dither.
 
         # Iterate through neighboring pixels.
         for i in range(-1, 2):
@@ -270,9 +271,8 @@ class MRSBkgInterp():
         ----------
         data : ndarray
             The 3D input data cube to compute the polynomial background from.
-        h_wht_p, v_wht_p, h_wht_s, v_wht_s: float
-            Value by which to weight the row and column arrays when bkg_mode = "simple" (*_s) or
-            "polynomial" (*_p). Default is (1.0, 1.0).
+        v_wht, h_wht : float
+            Value by which to weight the row and column arrays. Default is (1.0, 1.0).
         degree : int
             Degree of the polynomial fit. Default is 3.
 
@@ -327,20 +327,34 @@ class MRSBkgInterp():
         combo : ndarray
             The 3D combined normalized background cube.
         """
-        polymax = np.max(bkg_poly, axis=(1, 2))
-        polymin = np.nanmin(bkg_poly, axis=(1, 2))
-        simplemax = np.max(bkg_simple, axis=(1, 2))
-        simplemin = np.nanmin(bkg_simple, axis=(1, 2))
+        # polymax = np.max(bkg_poly, axis=(1, 2))
+        # polymin = np.nanmin(bkg_poly, axis=(1, 2))
+        # simplemax = np.max(bkg_simple, axis=(1, 2))
+        # simplemin = np.nanmin(bkg_simple, axis=(1, 2))
+        #
+        # # Normalize the backgrounds based on their max and min values.
+        # norm1 = (bkg_poly - polymin[:, np.newaxis, np.newaxis]) / (
+        #         polymax[:, np.newaxis, np.newaxis] - polymin[:, np.newaxis, np.newaxis])
+        # norm2 = (bkg_simple - simplemin[:, np.newaxis, np.newaxis]) / (
+        #         simplemax[:, np.newaxis, np.newaxis] - simplemin[:, np.newaxis, np.newaxis])
+        #
+        # # Combine the normalized polynomial and simple backgrounds and scale by the polynomial maxmimum.
+        # combo = (norm1 * norm2)
+        # combo *= polymax[:, np.newaxis, np.newaxis]
 
-        # Normalize the backgrounds based on their max and min values.
-        norm1 = (bkg_poly - polymin[:, np.newaxis, np.newaxis]) / (
-                polymax[:, np.newaxis, np.newaxis] - polymin[:, np.newaxis, np.newaxis])
-        norm2 = (bkg_simple - simplemin[:, np.newaxis, np.newaxis]) / (
-                simplemax[:, np.newaxis, np.newaxis] - simplemin[:, np.newaxis, np.newaxis])
+        polymax = np.max(bkg_poly)
+        polymin = np.nanmin(bkg_poly)
+        simplemax = np.max(bkg_simple)
+        simplemin = np.nanmin(bkg_simple)
+
+        norm1 = (bkg_poly - polymin) / (polymax - polymin)
+        norm2 = (bkg_simple - simplemin) / (simplemax - simplemin)
 
         # Combine the normalized polynomial and simple backgrounds and scale by the polynomial maxmimum.
         combo = (norm1 * norm2)
-        combo *= polymax[:, np.newaxis, np.newaxis]
+        combo *= (polymax - polymin)
+        combo += simplemin
+
         return combo
 
     def simple_median_bkg(self, data, v_wht=1., h_wht=1.):
@@ -404,38 +418,59 @@ class MRSBkgInterp():
             A 3D interpolated background cube.
         """
         self.print_inputs()
-
-        masked_bkgs = []
-        k = data.shape[0]
+        if len(data.shape) == 3:
+            bkgs = []
+            diffs = []
+            masked_bkgs = []
+            k = data.shape[0]
+        else:
+            k = 1
 
         # Loop over each slice.
         for i in range(k):
-            masked_bkgs.append(self.mask_source(data[i]))
+            # masked_bkgs.append(self.mask_source(data[i]))
+            #
+            # masked_bkg = np.array(masked_bkgs)
 
-        masked_bkg = np.array(masked_bkgs)
-
-        if self.bkg_mode == 'polynomial':
-            # Compute the polynomial background from the masked input data.
-            bkg_poly = self.polynomial_bkg(masked_bkg, v_wht=self.v_wht_p, h_wht=self.h_wht_p, degree=self.degree)
-            if self.combine_fits:
-                # Compute the simple median background.
-                bkg_simple = self.simple_median_bkg(masked_bkg, v_wht=self.v_wht_s, h_wht=self.h_wht_s)
-
-                # Normalize the polynomial background using the simple median background.
-                bkg = self.normalize_poly(bkg_poly, bkg_simple)
+            if k == 3:
+                slice = data[i]
             else:
-                bkg = bkg_poly
+                slice = data
 
-            diff = data - bkg * self.amp
+            masked_bkg = self.mask_source(slice)
 
-        elif self.bkg_mode == 'simple':
-            # Compute the simple median background from the masked input data.
-            bkg = self.simple_median_bkg(masked_bkg, v_wht=self.v_wht_s, h_wht=self.h_wht_s)
-            diff = data - bkg * self.amp
+            if self.bkg_mode == 'polynomial':
+                # Compute the polynomial background from the masked input data.
+                bkg_poly = self.polynomial_bkg(masked_bkg, v_wht=self.v_wht_p, h_wht=self.h_wht_p, degree=self.degree)
+                if self.combine_fits:
+                    # Compute the simple median background.
+                    bkg_simple = self.simple_median_bkg(masked_bkg, v_wht=self.v_wht_s, h_wht=self.h_wht_s)
 
-        else:
-            bkg = masked_bkg
-            diff = data - bkg * self.amp
+                    # Normalize the polynomial background using the simple median background.
+                    bkg = self.normalize_poly(bkg_poly, bkg_simple)
+                else:
+                    bkg = bkg_poly
+
+                diff = data - bkg * self.amp
+
+            elif self.bkg_mode == 'simple':
+                # Compute the simple median background from the masked input data.
+                bkg = self.simple_median_bkg(masked_bkg, v_wht=self.v_wht_s, h_wht=self.h_wht_s)
+                diff = data - bkg * self.amp
+
+            else:
+                bkg = masked_bkg
+                diff = data - bkg * self.amp
+
+            if k == 3:
+                bkgs.append(bkg)
+                diffs.append(diff)
+                masked_bkgs.append(masked_bkg)
+
+        if k == 3:
+            masked_bkg = np.array(masked_bkgs)
+            diff = np.array(diffs)
+            bkg = np.array(bkgs)
 
         return diff, bkg, masked_bkg
 
@@ -457,60 +492,85 @@ class MRSBkgInterp():
 
         """
 
-    masked_bkgs = []
-    k = data.shape[0]
+        def chisq(theta):
+            if self.bkg_mode == 'polynomial':
 
-    # Loop over each slice.
-    for i in range(k):
-        masked_bkgs.append(self.mask_source(data))
+                #get parameters from theta
+                v_wht_p, h_wht_p, v_wht_s, h_wht_s, amp, degree = theta
 
-    masked_bkg = np.array(masked_bkgs)
+                # fit polynomial bkg to masked bkg
+                bkg_poly = self.polynomial_bkg(masked_bkg, v_wht=v_wht_p, h_wht=h_wht_p, degree=degree)
 
-    def chisq(theta):
-        if self.bkg_mode == 'polynomial':
-            v_wht_p, h_wht_p, v_wht_s, h_wht_s, amp, degree = theta
-            bkg_poly = self.polynomial_bkg(masked_bkg, v_wht=v_wht_p, h_wht=h_wht_p, degree=degree)
-            if self.combine_fits:
-                bkg_simple = self.simple_median_bkg(masked_bkg, v_wht=v_wht_s, h_wht=h_wht_s)
+                if self.combine_fits:
+                    bkg_simple = self.simple_median_bkg(masked_bkg, v_wht=v_wht_s, h_wht=h_wht_s)
 
-                bkg = self.normalize_poly(bkg_poly, bkg_simple)
+                    bkg = self.normalize_poly(bkg_poly, bkg_simple)
+                else:
+                    bkg = bkg_poly
+
+                # diff = data - bkg
+
+            elif self.bkg_mode == 'simple':
+
+                # get parameters from theta
+                v_wht_s, h_wht_s = theta
+
+                # fit simple median bkg
+                bkg = self.simple_median_bkg(masked_bkg, v_wht=v_wht_s, h_wht=h_wht_s)
+                # diff = data - bkg
+
             else:
-                bkg = bkg_poly
+                print('optimization with no mode is weird.')
+                sys.exit()
+                bkg = masked_bkg
+                # diff = data - bkg
+            # print(v_wht_p, h_wht_p, v_wht_s, h_wht_s,np.sum((masked_bkg-bkg)**2))
+            return -.5 * np.sum((masked_bkg - bkg * amp) ** 2)
 
-            # diff = data - bkg
+        def prior_transform(parameters):
+            return xs * parameters + ys
 
-        elif self.bkg_mode == 'simple':
-            v_wht_s, h_wht_s = theta
-            bkg = self.simple_median_bkg(masked_bkg, v_wht=v_wht_s, h_wht=h_wht_s)
-            # diff = data - bkg
+        masked_bkgs = []
+        diffs = []
+        bkgs = []
+        k = data.shape[0]
 
-        else:
-            print('optimization with no mode is weird.')
-            sys.exit()
-            bkg = masked_bkg
-            # diff = data - bkg
-        # print(v_wht_p, h_wht_p, v_wht_s, h_wht_s,np.sum((masked_bkg-bkg)**2))
-        return (-.5 * np.sum((masked_bkg - bkg * amp) ** 2))
+        # Loop over each slice.
+        for i in range(k):
+            # masked_bkgs.append(self.mask_source(data))
+            # masked_bkg = np.array(masked_bkgs)
+            masked_bkg = self.mask_source(data[i])
 
-    xs = []
-    ys = []
-    if self.bkg_mode == 'simple':
-        all_bounds = [[0.001, 1]] * 2
-    else:
-        all_bounds = [[0.001, 1]] * 4
-    all_bounds.append([0, 10])
-    all_bounds.append([0, 10])
-    for bounds in all_bounds:
-        x, y = np.linalg.solve(np.array([[0.5, 1], [1, 1]]),
-                               np.array([bounds[0] + (bounds[1] - bounds[0]) / 2, bounds[1]]))
-        xs.append(x)
-        ys.append(y)
+            xs = []
+            ys = []
 
-    def prior_transform(parameters):
-        return xs * parameters + ys
+            if self.bkg_mode == 'simple':
+                all_bounds = [[0.001, 1]] * 2
+            else:
+                all_bounds = [[0.001, 1]] * 4
 
-    result_nest = nestle.sample(chisq, prior_transform, ndim=len(all_bounds), npoints=100, maxiter=None)
-    self.v_wht_p, self.h_wht_p, self.v_wht_s, self.h_wht_s, self.amp, self.degree = result_nest.samples[
-                                                                                    result_nest.weights.argmax(), :]
+            all_bounds.append([0, 10])
+            all_bounds.append([0, 10])
 
-    return self.run(data), result_nest
+            for bounds in all_bounds:
+                x, y = np.linalg.solve(np.array([[0.5, 1], [1, 1]]),
+                                       np.array([bounds[0] + (bounds[1] - bounds[0]) / 2, bounds[1]]))
+                xs.append(x)
+                ys.append(y)
+
+
+            result_nest = nestle.sample(chisq, prior_transform, ndim=len(all_bounds), npoints=100, maxiter=None)
+            self.v_wht_p, self.h_wht_p, self.v_wht_s, self.h_wht_s, self.amp, self.degree = result_nest.samples[
+                                                                                            result_nest.weights.argmax(), :]
+
+            diff, bkg, masked_bkg = self.run(data[i]), result_nest
+
+            masked_bkgs.append(masked_bkg)
+            diffs.append(diff)
+            bkgs.append(bkg)
+
+        masked_bkg_cube = np.array(masked_bkgs)
+        diff_cube = np.array(diffs)
+        bkg_cube = np.array(bkgs)
+
+        return diff_cube, bkg_cube, masked_bkg_cube
