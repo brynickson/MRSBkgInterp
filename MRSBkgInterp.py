@@ -1,55 +1,70 @@
 # ===================
 # Authors:
 #     Bryony Nickson
-#     Michael Engesser
+#     Mike Engesser
 #     Kirsten Larson
+#     Justin Pierel
 # ===================
 
 # Native Imports
+import nestle
 import numpy as np
 import polarTransform
 # 3rd Party Imports
 from matplotlib import pyplot as plt
 from scipy.signal import convolve2d
-from astropy.coordinates import Angle
-
 
 
 class MRSBkgInterp():
     """
-    This class attempts to compute a reasonable background estimation for JWST MIRI MRS data cubes. It uses a 
-    combination of interpolation and polynomial fitting methods to calculate the background.
+    This class attempts to compute a reasonable background estimation for JWST MIRI MRS data cubes. It will first
+    interpolate a background for a user defined aperture around a given source coordinate, in order to mask out the
+    source. It will then attempt one of 3 background fitting routines, and return both the background subtracted image
+    and the interpolated background image.
+
+    Parameters
+    ----------
+    src_y, src_x : int
+        Coordinate of point source in y and x.
+    mask_type: str
+        Type of mask to use when masking the source ("circular" or "elliptical").
+    aper_rad : int
+        Radius of the aperture from which to interpolate a background when masking the source if mask_type = "circular".
+    ann_width : int
+        Width of the annulus from which to compute a median background at a point along the aperture circumference
+        when masking the source.
+    semi_major : int
+        Semi-major axis of the aperture from which to interpolate the background when masking the source if the
+        mask_type = "elliptical".
+    semi_minor : int
+        Semi-minor axis of the aperture from which to interpolate the background when masking the source if the
+        mask_type = "elliptical".
+    angle : float
+        Rotation angle of the aperture from which to interpolate the background when masking the source when the
+        mask_type = "elliptical". The rotation angle increases counter-clockwise.
+    bkg_mode : str
+        Type of background cube to compute from the masked input images ("simple", "polynomial" or "None").
+        "simple": computes a simple median for each row and column and takes their
+            weighted mean.
+        "polynomial": fits a polynomial of degree "deg" to each row and column and takes
+            their weighted mean.
+        "None": will use the masked background cube as the final background cube.
+    degree : int
+        Degree of the polynomial fit to each row and column when bkg_mode = "polynomial".
+    h_wht_p, v_wht_p, h_wht_s, v_wht_s: float
+        Value by which to weight the row and column arrays when bkg_mode = "simple" (*_s) or
+        "polynomial" (*_p). Default is (1.0, 1.0).
+    amp : float
+        Amplitude factor by which to amplify the background. Default is 1.
+    kernel : ndarray
+        A 2D array of size (3,3) to use in convolving the masked background cube. If set to "None" the masked
+        background cube will not be convolved.
+    combine_fits : bool
+        Whether to combine the "polynomial" and "simple" background estimates.
     """
 
     def __init__(self):
-        """
-        Parameters
-        ----------
-        src_y, src_x : int
-            The (x,y) coordinates of the center of the source.
-        bkg_mode : str
-            Type of background cube to compute from the masked input images ("simple", "polynomial" or "None").
-            "simple": computes a simple median for each row and column and takes their
-                    weighted mean.
-            "polynomial": fits a polynomial of degree "deg" to each row and column and takes
-                    their weighted mean.
-            "None": will use the masked background cube as the final background cube.
-        degree : int
-            Degree of the polynomial fit to each row and column when bkg_mode = "polynomial".
-        aper_rad : int
-            Radius of the aperture for which to interpolate the background when masking the source.
-        ann_width : int
-            Width of the annulus from which to compute a median background at a point along the aperture circumference
-            when masking the source.
-        v_wht, h_wht : float
-            Value by which to weight the row and column arrays when using bkg_mode = "simple" or "polynomial".
-        kernel : ndarray
-            A 2D array of size (3,3) to use in convolving the masked background cube. If set to None, will not
-            convolve the masked background cube.
-        combine_fits : bool
-            Whether to combine the "polynomial" and "simple" background estimates.
-        """
-        # Parameters for source masking
+        # Parameters for source masking.
         self.src_y, self.src_x = None, None
 
         self.mask_type = 'circular'
@@ -64,9 +79,11 @@ class MRSBkgInterp():
         self.bkg_mode = 'simple'
         self.degree = 3
 
-
-        self.v_wht = 1.0
-        self.h_wht = 1.0
+        self.h_wht_s = 1.
+        self.v_wht_s = 1.
+        self.h_wht_p = 1.
+        self.v_wht_p = 1.
+        self.amp = 1.
 
         self.kernel = np.array([[0.0, 0.2, 0.0],
                                 [0.2, 0.2, 0.2],
@@ -77,17 +94,19 @@ class MRSBkgInterp():
         return
 
     def print_inputs(self):
-        """
-        Check that the user defined "src_x" and "src_y" and print all other variables.
-        """
+        """Check that the user defined "src_x" and "src_y" and print all other variables."""
         if self.src_y is None or self.src_x is None:
-            raise ValueError("src_y and src_x must be set!")
+            raise ValueError("src_x and src_y values must be set!")
 
         if self.kernel is not None:
             is_kernel = True
+        else:
+            is_kernel = False
 
         print(f"Source Masking: {self.mask_type}\n"
-              f"    Center: {self.src_x, self.src_y}")
+              f"    Center(s):")
+        for i, coord in enumerate(self.src_x):
+            print(f"    {self.src_x[i], self.src_y[i]}")
         if self.mask_type == 'circular':
             print(f"    Aperture radius: {self.aper_rad}")
         elif self.mask_type == 'elliptical':
@@ -95,14 +114,18 @@ class MRSBkgInterp():
                   f"    Semi-minor axis: {self.semi_minor}\n"
                   f"    Angle: {self.angle}")
         print(f"    Annulus width: {self.ann_width}\n"
-              f"Background Mode: {self.bkg_mode}\n"
-              f"    v_wht, h_wht: {self.v_wht, self.h_wht}\n"
+              f"Background Mode: {self.bkg_mode}")
+        if self.bkg_mode == 'simple':
+            print(f"    h_wht_s, v_wht_s: {self.h_wht_s, self.v_wht_s}")
+        elif self.bkg_mode == 'polynomial':
+            print(f"    h_wht_p, v_wht_p: {self.h_wht_p, self.v_wht_p}")
+        print(f"    amp: {self.amp}\n"
               f"    Convolution: {is_kernel}\n"
               f"    combine_fits: {self.combine_fits}\n")
 
     def fit_poly(self, X, deg=3, show_plot=False):
         """
-        Fits a polynomial of a given degree to the input data.
+        Fits a polynomial of degree "deg" to the input data.
 
         Parameters
         ----------
@@ -121,18 +144,18 @@ class MRSBkgInterp():
         x = np.arange(len(X))
         y = X[x]
 
-        # replace any values less than or equal to zero with the median value of y
+        # Replace any values less than or equal to zero with the median value of y.
         y[y <= 0] = np.nanmedian(y)
 
-        # fit polynomial to data
+        # Fit polynomial to data.
         fit = np.polyfit(x, y, deg)
         p = np.poly1d(fit)
 
-        # generate the predicted values for the input data
+        # Generate the predicted values for the input data.
         model = p(x)
 
         if show_plot:
-            # display input data and fitted polynomial model
+            # Display input data and fitted polynomial model.
             plt.figure(figsize=(12, 8))
             plt.plot(x, y)
             plt.plot(x, model)
@@ -142,8 +165,8 @@ class MRSBkgInterp():
 
     def interpolate_source(self, data, center):
         """
-        Interpolates the pixel values in the region interior to the aperture radius of the image data
-        using a median filter and linear interpolation.
+        Interpolates the pixel values in the region interior to the aperture radius of the image data using a median
+        filter and linear interpolation.
 
         Parameters:
         -----------
@@ -156,11 +179,10 @@ class MRSBkgInterp():
         Returns:
         --------
         cartesianImage: ndarray
-            The filtered and interpolated image data cube in cartesian coordinates."""
-
+            The filtered and interpolated image data cube in cartesian coordinates.
+        """
         # Convert the input data from Cartesian to polar coordinates, specifying the source as the origin of the
         # polar coordinate system.
-        cartesian_data = data.copy()
         polarImage, ptSettings = polarTransform.convertToPolarImage(data, center=center)
 
         m, n = polarImage.shape
@@ -175,34 +197,34 @@ class MRSBkgInterp():
         angle = self.angle
 
         if mask_type == 'circular':
-            # iterate over the rows and compute the median of the pixels in the annulus
+            # Iterate over the rows and compute the median of the pixels in the annulus.
             for i in range(0, m):
                 temp[i] = np.nanmedian(polarImage[i, r:r + ann_width])
 
-            # perform a linear interpolation between the median values of the opposite rows in the polar image.
+            # Perform a linear interpolation between the median values of the opposite rows in the polar image.
             for i in range(0, m):
                 new_row = np.linspace(temp[i], temp[i - half], r * 2)
 
-                # fill in the left and right halves of the row in the polar image with the interpolated values.
+                # Fill in the left and right halves of the row in the polar image with the interpolated values.
                 polarImage[i, :r] = new_row[r - 1::-1]
                 polarImage[i - half, :r] = new_row[r:]
 
         elif mask_type == 'elliptical':
-            # define a theta array from 0 to 2pi
+            # Define a theta array from 0 to 2pi.
             n = int(angle / 360 * m)
             theta1 = np.linspace(np.deg2rad(angle), 2 * np.pi, m - n)
             theta2 = np.linspace(np.deg2rad(angle), np.deg2rad(angle), n)
             theta = np.concatenate([theta1, theta2], axis=0)
 
-            # Equation for radius of an ellipse as a function of a, b, and theta
+            # Equation for radius of an ellipse as a function of a, b, and theta.
             rap = (a * b) / np.sqrt((a ** 2) * np.sin(theta) ** 2 + (b ** 2) * np.cos(theta) ** 2)
             rann = (an * bn) / np.sqrt((an ** 2) * np.sin(theta) ** 2 + (bn ** 2) * np.cos(theta) ** 2)
 
-            # mask aperture based on annulus
+            # Mask aperture based on annulus.
             for i in range(polarImage.shape[0]):
                 polarImage[i, :int(rap[i])] = np.nanmedian(polarImage[i, int(rap[i]):int(rann[i])])
 
-        # convert the filtered polar image back cartesian coordinates
+        # Convert the filtered polar image back cartesian coordinates.
         cartesianImage = ptSettings.convertToCartesianImage(polarImage)
 
         return cartesianImage
@@ -223,23 +245,23 @@ class MRSBkgInterp():
         conv_bkg : ndarray
             The 3D output data cube after applying the mask and convolution.
         """
-        dithers = []  # list of masked data for each dither
 
-        # iterate through neighboring pixels
-        for i in range(-1, 2):
-            for j in range(-1, 2):
-                center = [self.src_x + i, self.src_y + j]  # coordinates of shifted copy
-                dither = self.interpolate_source(data, center)  # interpolate shifted copy
-                dithers.append(dither)
+        for n, coord in enumerate(self.src_x):
+            dithers = []  # List of masked data for each dither.
+            # Iterate through neighboring pixels.
+            for i in range(-1, 2):
+                for j in range(-1, 2):
+                    center = [self.src_x[n] + i, self.src_y[n] + j]
+                    dither = self.interpolate_source(data, center)
+                    dithers.append(dither)
 
-        # take the median of the shifted copies
-        new_data = np.nanmedian(np.array(dithers), axis=0)
+            data = np.nanmedian(np.array(dithers), axis=0)
 
-        # convolve with kernel if one was passed in
+        # Convolve with kernel if one was passed in.
         if self.kernel is not None:
-            conv_bkg = convolve2d(new_data, self.kernel, mode='same')
+            conv_bkg = convolve2d(data, self.kernel, mode='same')
         else:
-            conv_bkg = new_data
+            conv_bkg = data
 
         return conv_bkg
 
@@ -253,7 +275,7 @@ class MRSBkgInterp():
         data : ndarray
             The 3D input data cube to compute the polynomial background from.
         v_wht, h_wht : float
-            Weights given for the row and column medians. Default is 1.
+            Value by which to weight the row and column arrays. Default is (1.0, 1.0).
         degree : int
             Degree of the polynomial fit. Default is 3.
 
@@ -262,32 +284,33 @@ class MRSBkgInterp():
         bkg_poly : ndarray
             The 3D interpolated polynomial background cube.
         """
-        bkg_poly = np.zeros_like(data)
-        k = bkg_poly.shape[0]
+        # bkg_poly = np.zeros_like(data)
+        # k = bkg_poly.shape[0]
 
         # Loop over each slice.
-        for z in range(0, k):
+        # for z in range(0, k):
 
-            # Set up arrays of proper shape to store the computed polynomial backgrounds
-            # for the horizontal/ vertical directions.
-            bkg_h = np.zeros_like(data[z])
-            bkg_v = np.zeros_like(data[z])
-            # Get number of rows/columns in slice.
-            m, n = data[z].shape
+        # Set up arrays of proper shape to store the computed polynomial backgrounds
+        # for the horizontal/ vertical directions.
+        bkg_h = np.zeros_like(data)#[z])
+        bkg_v = np.zeros_like(data)#[z])
 
-            # Fit polynomial to each row and store in corresponding row of `bkg_h` array.
-            for i in range(0, m):
-                bkg_h[i, :] = self.fit_poly(data[z, i, :], deg=degree, show_plot=False)
+        m, n = data.shape#[z].shape
 
-            # Fit polynomial to each column and store in corresponding row of `bkg_v` array.
-            for j in range(0, n):
-                bkg_v[:, j] = self.fit_poly(data[z, :, j], deg=degree, show_plot=False)
+        # Fit polynomial to each row in all dithers.
+        for i in range(0, m):
+            #bkg_h[i, :] = self.fit_poly(data[z, i, :], deg=degree, show_plot=False)
+            bkg_h[i, :] = self.fit_poly(data[i, :], deg=degree, show_plot=False)
 
-            # Compute the average of the vertical/horizontal polynomial backgrounds.
-            bkg_avg = np.average([bkg_v, bkg_h], axis=0)
+        # Fit polynomial to each column in all dithers.
+        for j in range(0, n):
+            # bkg_v[:, j] = self.fit_poly(data[z, :, j], deg=degree, show_plot=False)
+            bkg_v[:, j] = self.fit_poly(data[:, j], deg=degree, show_plot=False)
 
-            # Store in the corresponding slice of the `bkg_poly` array.
-            bkg_poly[z] = bkg_avg
+        # Compute the average of the vertical/horizontal polynomial backgrounds.
+        bkg_avg = np.average([bkg_v, bkg_h], weights=[v_wht, h_wht], axis=0)
+        #bkg_poly[z] = bkg_avg
+        bkg_poly = bkg_avg
 
         return bkg_poly
 
@@ -309,26 +332,40 @@ class MRSBkgInterp():
         combo : ndarray
             The 3D combined normalized background cube.
         """
-        polymax = np.max(bkg_poly, axis=(1, 2))
-        polymin = np.nanmin(bkg_poly, axis=(1, 2))
-        simplemax = np.max(bkg_simple, axis=(1, 2))
-        simplemin = np.nanmin(bkg_simple, axis=(1, 2))
+        # polymax = np.max(bkg_poly, axis=(1, 2))
+        # polymin = np.nanmin(bkg_poly, axis=(1, 2))
+        # simplemax = np.max(bkg_simple, axis=(1, 2))
+        # simplemin = np.nanmin(bkg_simple, axis=(1, 2))
+        #
+        # # Normalize the backgrounds based on their max and min values.
+        # norm1 = (bkg_poly - polymin[:, np.newaxis, np.newaxis]) / (
+        #         polymax[:, np.newaxis, np.newaxis] - polymin[:, np.newaxis, np.newaxis])
+        # norm2 = (bkg_simple - simplemin[:, np.newaxis, np.newaxis]) / (
+        #         simplemax[:, np.newaxis, np.newaxis] - simplemin[:, np.newaxis, np.newaxis])
+        #
+        # # Combine the normalized polynomial and simple backgrounds and scale by the polynomial maxmimum.
+        # combo = (norm1 * norm2)
+        # combo *= polymax[:, np.newaxis, np.newaxis]
 
-        # normalize the backgrounds based on their max and min values
-        norm1 = (bkg_poly - polymin[:, np.newaxis, np.newaxis]) / (
-                polymax[:, np.newaxis, np.newaxis] - polymin[:, np.newaxis, np.newaxis])
-        norm2 = (bkg_simple - simplemin[:, np.newaxis, np.newaxis]) / (
-                    simplemax[:, np.newaxis, np.newaxis] - simplemin[:, np.newaxis, np.newaxis])
+        polymax = np.max(bkg_poly)
+        polymin = np.nanmin(bkg_poly)
+        simplemax = np.max(bkg_simple)
+        simplemin = np.nanmin(bkg_simple)
 
-        # combine the normalized polynomial and simple backgrounds and scale by the polynomial maxmimum
+        norm1 = (bkg_poly - polymin) / (polymax - polymin)
+        norm2 = (bkg_simple - simplemin) / (simplemax - simplemin)
+
+        # Combine the normalized polynomial and simple backgrounds and scale by the polynomial maxmimum.
         combo = (norm1 * norm2)
-        combo *= polymax[:, np.newaxis, np.newaxis]
+        combo *= (polymax - polymin)
+        combo += simplemin
+
         return combo
 
     def simple_median_bkg(self, data, v_wht=1., h_wht=1.):
         """
-        Calculates the median background for each slice of the masked input data by taking the median along each row and
-        column in the array. The final background is then calculated for each slice as a weighted average of the
+        Calculates the median background for each slice of the masked input data by taking the median along each row
+        and column in the array. The final background is then calculated for each slice as a weighted average of the
         row and column medians.
 
         Parameters
@@ -341,37 +378,40 @@ class MRSBkgInterp():
         Returns
         -------
         bkg : ndarray
-            The 3D simple background data cube
+            The 3D simple background data cube.
         """
-        bkg = np.zeros_like(data)
-        k = bkg.shape[0]
+        #bkg = np.zeros_like(data)
+        #k = bkg.shape[0]
 
         # Loop over each slice.
-        for z in range(0, k):
+        #for z in range(0, k):
 
-            # Set up empty arrays for the median background images
-            bkg_h = np.zeros_like(data[z])
-            bkg_v = np.zeros_like(data[z])
-            # Get dimension of current slice
-            m, n = data[z].shape
+        # Set up empty arrays of proper shape.
+        bkg_h = np.zeros_like(data)#[z])
+        bkg_v = np.zeros_like(data)#[z])
 
-            # Calculate median of each row
-            for i in range(0, m):
-                bkg_h[i, :] = np.nanmedian(data[z, i, :], axis=0)
+        m, n = data.shape#[z].shape
 
-            # Calculate median of each column
-            for j in range(0, n):
-                bkg_v[:, j] = np.nanmedian(data[z, :, j], axis=0)
+        # Calculate median of each row in all dithers.
+        for i in range(0, m):
+            #bkg_h[i, :] = np.nanmedian(data[z, i, :], axis=0)
+            bkg_h[i, :] = np.nanmedian(data[i, :], axis=0)
 
-            # Calculate the weighted average of the row and column medians
-            bkg_avg = np.average([bkg_v, bkg_h], weights=[v_wht, h_wht], axis=0)
-            bkg[z] = bkg_avg
+        # Calculate median of each column in all dithers.
+        for j in range(0, n):
+            #bkg_v[:, j] = np.nanmedian(data[z, :, j], axis=0)
+            bkg_v[:, j] = np.nanmedian(data[:, j], axis=0)
+
+        # Calculate the weighted average of the row and column medians.
+        bkg_avg = np.average([bkg_v, bkg_h], weights=[v_wht, h_wht], axis=0)
+        # bkg[z] = bkg_avg
+        bkg = bkg_avg
 
         return bkg
 
     def run(self, data):
         """
-        Runs the background subtraction on the input data using the chosen background subtraction method.
+        Masks out source and interpolates the background in each slice of the input data.
 
         Parameters
         ----------
@@ -381,43 +421,166 @@ class MRSBkgInterp():
         Returns
         -------
         diff: ndarray
-            A 3D background-subtracted cube.
+            A 3D background subtracted cube.
         bkg: ndarray
-            A 3D background cube.
+            A 3D interpolated background cube.
         """
         self.print_inputs()
 
+        ndims = len(data.shape)
+        if ndims == 3:
+            bkgs = []
+            diffs = []
+            masked_bkgs = []
+            k = data.shape[0]
+        else:
+            k = 1
+
+        # Loop over each slice.
+        for i in range(k):
+            # masked_bkgs.append(self.mask_source(data[i]))
+            #
+            # masked_bkg = np.array(masked_bkgs)
+
+            if ndims == 3:
+                im = data[i]
+            else:
+                im = data
+
+            masked_bkg = self.mask_source(im)
+
+            if self.bkg_mode == 'polynomial':
+                # Compute the polynomial background from the masked input data.
+                bkg_poly = self.polynomial_bkg(masked_bkg, v_wht=self.v_wht_p, h_wht=self.h_wht_p, degree=self.degree)
+                if self.combine_fits:
+                    # Compute the simple median background.
+                    bkg_simple = self.simple_median_bkg(masked_bkg, v_wht=self.v_wht_s, h_wht=self.h_wht_s)
+
+                    # Normalize the polynomial background using the simple median background.
+                    bkg = self.normalize_poly(bkg_poly, bkg_simple)
+                else:
+                    bkg = bkg_poly
+
+                diff = im - bkg * self.amp
+
+            elif self.bkg_mode == 'simple':
+                # Compute the simple median background from the masked input data.
+                bkg = self.simple_median_bkg(masked_bkg, v_wht=self.v_wht_s, h_wht=self.h_wht_s)
+                diff = im - bkg * self.amp
+
+            else:
+                bkg = masked_bkg
+                diff = im - bkg * self.amp
+
+            if ndims == 3:
+                bkgs.append(bkg)
+                diffs.append(diff)
+                masked_bkgs.append(masked_bkg)
+
+        if ndims == 3:
+            masked_bkg = np.array(masked_bkgs)
+            diff = np.array(diffs)
+            bkg = np.array(bkgs)
+
+        return diff, bkg, masked_bkg
+
+    def run_opt(self, data):
+        """
+        Version of self.run() that optimizes parameter choices using a least squares fit.
+
+        Parameters
+        ----------
+        data : ndarray
+            A 2D MIRI stamp.
+
+        Returns
+        -------
+        diff : ndarray
+            The Background subtracted image.
+        bkg : ndarray
+            The interpolated background image.
+
+        """
+
+        def chisq(theta):
+            if self.bkg_mode == 'polynomial':
+
+                #get parameters from theta
+                v_wht_p, h_wht_p, v_wht_s, h_wht_s, amp, degree = theta
+
+                # fit polynomial bkg to masked bkg
+                bkg_poly = self.polynomial_bkg(masked_bkg, v_wht=v_wht_p, h_wht=h_wht_p, degree=degree)
+
+                if self.combine_fits:
+                    bkg_simple = self.simple_median_bkg(masked_bkg, v_wht=v_wht_s, h_wht=h_wht_s)
+
+                    bkg = self.normalize_poly(bkg_poly, bkg_simple)
+                else:
+                    bkg = bkg_poly
+
+                # diff = data - bkg
+
+            elif self.bkg_mode == 'simple':
+
+                # get parameters from theta
+                v_wht_s, h_wht_s = theta
+
+                # fit simple median bkg
+                bkg = self.simple_median_bkg(masked_bkg, v_wht=v_wht_s, h_wht=h_wht_s)
+                # diff = data - bkg
+
+            else:
+                print('optimization with no mode is weird.')
+                sys.exit()
+                bkg = masked_bkg
+                # diff = data - bkg
+            # print(v_wht_p, h_wht_p, v_wht_s, h_wht_s,np.sum((masked_bkg-bkg)**2))
+            return -.5 * np.sum((masked_bkg - bkg * amp) ** 2)
+
+        def prior_transform(parameters):
+            return xs * parameters + ys
+
+        bkgs = []
+        diffs = []
         masked_bkgs = []
         k = data.shape[0]
 
         # Loop over each slice.
         for i in range(k):
-            masked_bkgs.append(self.mask_source(data[i]))
+            # masked_bkgs.append(self.mask_source(data))
+            # masked_bkg = np.array(masked_bkgs)
+            masked_bkg = self.mask_source(data[i])
 
-        masked_bkg = np.array(masked_bkgs)  # source-masked frames
+            xs = []
+            ys = []
 
-        if self.bkg_mode == 'polynomial':
-            # compute the polynomial background from the masked input data
-            bkg_poly = self.polynomial_bkg(masked_bkg, v_wht=self.v_wht, h_wht=self.h_wht, degree=self.degree)
-            if self.combine_fits:
-                # compute the simple median background
-                bkg_simple = self.simple_median_bkg(masked_bkg, v_wht=self.v_wht, h_wht=self.h_wht)
-
-                # normalize the polynomial background using the simple median background
-                bkg = self.normalize_poly(bkg_poly, bkg_simple)
+            if self.bkg_mode == 'simple':
+                all_bounds = [[0.001, 1]] * 2
             else:
-                bkg = bkg_poly
+                all_bounds = [[0.001, 1]] * 4
 
-            diff = data - bkg
+            all_bounds.append([0, 10])
+            all_bounds.append([0, 10])
+
+            for bounds in all_bounds:
+                x, y = np.linalg.solve(np.array([[0.5, 1], [1, 1]]),
+                                       np.array([bounds[0] + (bounds[1] - bounds[0]) / 2, bounds[1]]))
+                xs.append(x)
+                ys.append(y)
 
 
-        elif self.bkg_mode == 'simple':
-            # compute the simple median background from the masked input data
-            bkg = self.simple_median_bkg(masked_bkg, v_wht=self.v_wht, h_wht=self.h_wht)
-            diff = data - bkg  # background-subtracted image
+            result_nest = nestle.sample(chisq, prior_transform, ndim=len(all_bounds), npoints=100, maxiter=None)
+            self.v_wht_p, self.h_wht_p, self.v_wht_s, self.h_wht_s, self.amp, self.degree = result_nest.samples[
+                                                                                            result_nest.weights.argmax(), :]
 
-        else:
-            bkg = masked_bkg
-            diff = data - bkg
+            diff, bkg, masked_bkg = self.run(data[i])
 
-        return diff, bkg
+            masked_bkgs.append(masked_bkg)
+            diffs.append(diff)
+            bkgs.append(bkg)
+
+        masked_bkg_cube = np.array(masked_bkgs)
+        diff_cube = np.array(diffs)
+        bkg_cube = np.array(bkgs)
+
+        return diff_cube, bkg_cube, masked_bkg_cube
