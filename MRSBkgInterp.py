@@ -96,7 +96,7 @@ class MRSBkgInterp():
     def print_inputs(self):
         """Check that the user defined "src_x" and "src_y" and print all other variables."""
         if self.src_y is None or self.src_x is None:
-            raise ValueError("src_y and src_x must be set!")
+            raise ValueError("src_x and src_y values must be set!")
 
         if self.kernel is not None:
             is_kernel = True
@@ -104,7 +104,9 @@ class MRSBkgInterp():
             is_kernel = False
 
         print(f"Source Masking: {self.mask_type}\n"
-              f"    Center: {self.src_x, self.src_y}")
+              f"    Center(s):")
+        for i, coord in enumerate(self.src_x):
+            print(f"    {self.src_x[i], self.src_y[i]}")
         if self.mask_type == 'circular':
             print(f"    Aperture radius: {self.aper_rad}")
         elif self.mask_type == 'elliptical':
@@ -243,22 +245,23 @@ class MRSBkgInterp():
         conv_bkg : ndarray
             The 3D output data cube after applying the mask and convolution.
         """
-        dithers = []  # List of masked data for each dither.
 
-        # Iterate through neighboring pixels.
-        for i in range(-1, 2):
-            for j in range(-1, 2):
-                center = [self.src_x + i, self.src_y + j]
-                dither = self.interpolate_source(data, center)
-                dithers.append(dither)
+        for n, coord in enumerate(self.src_x):
+            dithers = []  # List of masked data for each dither.
+            # Iterate through neighboring pixels.
+            for i in range(-1, 2):
+                for j in range(-1, 2):
+                    center = [self.src_x[n] + i, self.src_y[n] + j]
+                    dither = self.interpolate_source(data, center)
+                    dithers.append(dither)
 
-        new_data = np.nanmedian(np.array(dithers), axis=0)
+            data = np.nanmedian(np.array(dithers), axis=0)
 
         # Convolve with kernel if one was passed in.
         if self.kernel is not None:
-            conv_bkg = convolve2d(new_data, self.kernel, mode='same')
+            conv_bkg = convolve2d(data, self.kernel, mode='same')
         else:
-            conv_bkg = new_data
+            conv_bkg = data
 
         return conv_bkg
 
@@ -281,31 +284,33 @@ class MRSBkgInterp():
         bkg_poly : ndarray
             The 3D interpolated polynomial background cube.
         """
-        bkg_poly = np.zeros_like(data)
-        k = bkg_poly.shape[0]
+        # bkg_poly = np.zeros_like(data)
+        # k = bkg_poly.shape[0]
 
         # Loop over each slice.
-        for z in range(0, k):
+        # for z in range(0, k):
 
-            # Set up arrays of proper shape to store the computed polynomial backgrounds
-            # for the horizontal/ vertical directions.
-            bkg_h = np.zeros_like(data[z])
-            bkg_v = np.zeros_like(data[z])
+        # Set up arrays of proper shape to store the computed polynomial backgrounds
+        # for the horizontal/ vertical directions.
+        bkg_h = np.zeros_like(data)#[z])
+        bkg_v = np.zeros_like(data)#[z])
 
-            m, n = data[z].shape
+        m, n = data.shape#[z].shape
 
-            # Fit polynomial to each row in all dithers.
-            for i in range(0, m):
-                bkg_h[i, :] = self.fit_poly(data[z, i, :], deg=degree, show_plot=False)
+        # Fit polynomial to each row in all dithers.
+        for i in range(0, m):
+            #bkg_h[i, :] = self.fit_poly(data[z, i, :], deg=degree, show_plot=False)
+            bkg_h[i, :] = self.fit_poly(data[i, :], deg=degree, show_plot=False)
 
-            # Fit polynomial to each column in all dithers.
-            for j in range(0, n):
-                bkg_v[:, j] = self.fit_poly(data[z, :, j], deg=degree, show_plot=False)
+        # Fit polynomial to each column in all dithers.
+        for j in range(0, n):
+            # bkg_v[:, j] = self.fit_poly(data[z, :, j], deg=degree, show_plot=False)
+            bkg_v[:, j] = self.fit_poly(data[:, j], deg=degree, show_plot=False)
 
-            # Compute the average of the vertical/horizontal polynomial backgrounds.
-            bkg_avg = np.average([bkg_v, bkg_h], weights=[v_wht, h_wht], axis=0)
-
-            bkg_poly[z] = bkg_avg
+        # Compute the average of the vertical/horizontal polynomial backgrounds.
+        bkg_avg = np.average([bkg_v, bkg_h], weights=[v_wht, h_wht], axis=0)
+        #bkg_poly[z] = bkg_avg
+        bkg_poly = bkg_avg
 
         return bkg_poly
 
@@ -375,29 +380,32 @@ class MRSBkgInterp():
         bkg : ndarray
             The 3D simple background data cube.
         """
-        bkg = np.zeros_like(data)
-        k = bkg.shape[0]
+        #bkg = np.zeros_like(data)
+        #k = bkg.shape[0]
 
         # Loop over each slice.
-        for z in range(0, k):
+        #for z in range(0, k):
 
-            # Set up empty arrays of proper shape.
-            bkg_h = np.zeros_like(data[z])
-            bkg_v = np.zeros_like(data[z])
+        # Set up empty arrays of proper shape.
+        bkg_h = np.zeros_like(data)#[z])
+        bkg_v = np.zeros_like(data)#[z])
 
-            m, n = data[z].shape
+        m, n = data.shape#[z].shape
 
-            # Calculate median of each row in all dithers.
-            for i in range(0, m):
-                bkg_h[i, :] = np.nanmedian(data[z, i, :], axis=0)
+        # Calculate median of each row in all dithers.
+        for i in range(0, m):
+            #bkg_h[i, :] = np.nanmedian(data[z, i, :], axis=0)
+            bkg_h[i, :] = np.nanmedian(data[i, :], axis=0)
 
-            # Calculate median of each column in all dithers.
-            for j in range(0, n):
-                bkg_v[:, j] = np.nanmedian(data[z, :, j], axis=0)
+        # Calculate median of each column in all dithers.
+        for j in range(0, n):
+            #bkg_v[:, j] = np.nanmedian(data[z, :, j], axis=0)
+            bkg_v[:, j] = np.nanmedian(data[:, j], axis=0)
 
-            # Calculate the weighted average of the row and column medians.
-            bkg_avg = np.average([bkg_v, bkg_h], weights=[v_wht, h_wht], axis=0)
-            bkg[z] = bkg_avg
+        # Calculate the weighted average of the row and column medians.
+        bkg_avg = np.average([bkg_v, bkg_h], weights=[v_wht, h_wht], axis=0)
+        # bkg[z] = bkg_avg
+        bkg = bkg_avg
 
         return bkg
 
@@ -418,7 +426,9 @@ class MRSBkgInterp():
             A 3D interpolated background cube.
         """
         self.print_inputs()
-        if len(data.shape) == 3:
+
+        ndims = len(data.shape)
+        if ndims == 3:
             bkgs = []
             diffs = []
             masked_bkgs = []
@@ -432,12 +442,12 @@ class MRSBkgInterp():
             #
             # masked_bkg = np.array(masked_bkgs)
 
-            if k == 3:
-                slice = data[i]
+            if ndims == 3:
+                im = data[i]
             else:
-                slice = data
+                im = data
 
-            masked_bkg = self.mask_source(slice)
+            masked_bkg = self.mask_source(im)
 
             if self.bkg_mode == 'polynomial':
                 # Compute the polynomial background from the masked input data.
@@ -451,23 +461,23 @@ class MRSBkgInterp():
                 else:
                     bkg = bkg_poly
 
-                diff = data - bkg * self.amp
+                diff = im - bkg * self.amp
 
             elif self.bkg_mode == 'simple':
                 # Compute the simple median background from the masked input data.
                 bkg = self.simple_median_bkg(masked_bkg, v_wht=self.v_wht_s, h_wht=self.h_wht_s)
-                diff = data - bkg * self.amp
+                diff = im - bkg * self.amp
 
             else:
                 bkg = masked_bkg
-                diff = data - bkg * self.amp
+                diff = im - bkg * self.amp
 
-            if k == 3:
+            if ndims == 3:
                 bkgs.append(bkg)
                 diffs.append(diff)
                 masked_bkgs.append(masked_bkg)
 
-        if k == 3:
+        if ndims == 3:
             masked_bkg = np.array(masked_bkgs)
             diff = np.array(diffs)
             bkg = np.array(bkgs)
@@ -530,9 +540,9 @@ class MRSBkgInterp():
         def prior_transform(parameters):
             return xs * parameters + ys
 
-        masked_bkgs = []
-        diffs = []
         bkgs = []
+        diffs = []
+        masked_bkgs = []
         k = data.shape[0]
 
         # Loop over each slice.
@@ -563,7 +573,7 @@ class MRSBkgInterp():
             self.v_wht_p, self.h_wht_p, self.v_wht_s, self.h_wht_s, self.amp, self.degree = result_nest.samples[
                                                                                             result_nest.weights.argmax(), :]
 
-            diff, bkg, masked_bkg = self.run(data[i]), result_nest
+            diff, bkg, masked_bkg = self.run(data[i])
 
             masked_bkgs.append(masked_bkg)
             diffs.append(diff)
