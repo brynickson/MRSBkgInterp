@@ -14,8 +14,6 @@ from matplotlib import pyplot as plt
 from scipy.signal import convolve2d
 from astropy.coordinates import Angle
 
-
-
 class AstroBkgInterp():
     """
     This class attempts to compute a reasonable background estimation for 2D or 3D astronomical data. It uses a 
@@ -147,7 +145,7 @@ class AstroBkgInterp():
         s: np.ndarray
 
         '''
-
+        
         # grid coords
         x, y = np.meshgrid(x, y)
         # coefficient array, up to x^kx, y^ky
@@ -161,9 +159,11 @@ class AstroBkgInterp():
             # do not include powers greater than order
             arr = coeffs[j, i] * x**i * y**j
             a[index] = arr.ravel()
+            
+        nans = np.isnan(z)
 
         # do leastsq fitting and return leastsq result
-        return np.linalg.lstsq(a.T, np.ravel(z), rcond=None)
+        return np.linalg.lstsq(a.T[~np.ravel(nans)], np.ravel(z[~nans]), rcond=None)
     
 
     def interpolate_source(self, data, center):
@@ -230,7 +230,7 @@ class AstroBkgInterp():
 
         # convert the filtered polar image back cartesian coordinates
         cartesianImage = ptSettings.convertToCartesianImage(polarImage)
-
+        
         return cartesianImage
 
     def mask_source(self, data):
@@ -249,7 +249,7 @@ class AstroBkgInterp():
         conv_bkg : ndarray
             The 2D output data after applying the mask and convolution.
         """
-
+        
 
         dithers = []  # list of masked data for each dither
 
@@ -289,9 +289,9 @@ class AstroBkgInterp():
         combo : ndarray
             The 2D combined normalized background image.
         """
-        polymax = np.max(bkg_poly)
+        polymax = np.nanmax(bkg_poly)
         polymin = np.nanmin(bkg_poly)
-        simplemax = np.max(bkg_simple)
+        simplemax = np.nanmax(bkg_simple)
         simplemin = np.nanmin(bkg_simple)
 
         # normalize the backgrounds based on their max and min values
@@ -387,16 +387,23 @@ class AstroBkgInterp():
             k = 1
             data = np.array([data])
         
-
         # Loop over each slice.
         for i in range(k):
-            masked_bkg = self.mask_source(data[i])
+            
+            im = data[i].copy()
+            
+            nanmask = np.ma.masked_where(im==0,im)
+            masked_bkg = self.mask_source(im)
+            
+            masked_bkg[nanmask.mask] = np.nan
+            im[nanmask.mask] = np.nan
+            
             masked_bkg = np.array([masked_bkg])
 
             if self.bkg_mode == 'polynomial':
 
-                x = np.arange(0, data[i].shape[0], 1)
-                y = np.arange(0, data[i].shape[1], 1)
+                x = np.arange(0, masked_bkg[0].shape[0], 1)
+                y = np.arange(0, masked_bkg[0].shape[1], 1)
 
                 mx,my = np.meshgrid(x,y)
 
@@ -405,20 +412,23 @@ class AstroBkgInterp():
                     
                     for kx in self.kx:
                         for ky in self.ky:
-
+                            
                             soln = self.polyfit2d(x, y, masked_bkg[0], kx,ky)
                             coeff = soln[0].reshape((kx+1,ky+1))
                             fitted_surf = np.polynomial.polynomial.polygrid2d(x, y, coeff)
                             bkg_poly = np.array([fitted_surf])[0]
-                            
+                                                        
                             if self.combine_fits:
                                 bkg_simple = self.simple_median_bkg(masked_bkg[0], v_wht=self.v_wht_s, h_wht=self.h_wht_s)
 
                                 bkg = self.normalize_poly(bkg_poly, bkg_simple)
                             else:
                                 bkg = bkg_poly
-
-                            temp = (-.5*np.sum((masked_bkg-bkg)**2))
+                                
+                            bkgnorm = bkg/np.nanmax(bkg)
+                            masknorm = masked_bkg/np.nanmax(masked_bkg)
+                            
+                            temp = (-.5*np.nansum(np.abs(bkgnorm-masknorm)**2))
                             residuals.append([kx,ky,temp,bkg])
 
 
@@ -446,15 +456,15 @@ class AstroBkgInterp():
                     else:
                         bkg = bkg_poly
 
-                diff = data[i] - bkg
+                diff = im - bkg
 
             elif self.bkg_mode == 'simple':
                 bkg = self.simple_median_bkg(masked_bkg, v_wht=self.v_wht_s, h_wht=self.h_wht_s)
-                diff = data - bkg
+                diff = im - bkg
 
             else:
                 bkg = masked_bkg
-                diff = data - bkg
+                diff = im - bkg
 
                 
             if ndims == 3:
@@ -470,7 +480,7 @@ class AstroBkgInterp():
         masked_bkg = np.array(masked_bkgs)
         bkg = np.array(bkgs)
         diff = np.array(diffs)
-        
+                
         if not self.is_cube:
             masked_bkg = masked_bkg[0]
 
