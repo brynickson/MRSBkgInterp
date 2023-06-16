@@ -265,7 +265,7 @@ class AstroBkgInterp():
 
         # convolve with kernel if one was passed in
         if self.kernel is not None:
-            conv_bkg = convolve2d(new_data, self.kernel, mode='same')
+            conv_bkg = convolve2d(new_data, self.kernel, mode='same',boundary='symm')
         else:
             conv_bkg = new_data
 
