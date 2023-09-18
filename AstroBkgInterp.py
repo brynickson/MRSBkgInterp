@@ -55,7 +55,7 @@ class AstroBkgInterp():
             The length of the semi-major and semi-minor axes of the ellipse when 'mask_type' = 'elliptical'. Defaults
             are 6 and 4 respectively. 
         angle : int or float
-            The angle of rotation of the ellipse in radians with respect to the 2D coordinate grid. Default is 0.
+            The angle of rotation of the ellipse in degrees with respect to the 2D coordinate grid. Default is 0.
         is_cube : bool
             Whether the input data is 2D or 3D. 
         """
@@ -459,7 +459,7 @@ class AstroBkgInterp():
                 diff = im - bkg
 
             elif self.bkg_mode == 'simple':
-                bkg = self.simple_median_bkg(masked_bkg, v_wht=self.v_wht_s, h_wht=self.h_wht_s)
+                bkg = self.simple_median_bkg(masked_bkg[0], v_wht=self.v_wht_s, h_wht=self.h_wht_s)
                 diff = im - bkg
 
             else:
