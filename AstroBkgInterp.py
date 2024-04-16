@@ -21,9 +21,9 @@ from functools import reduce
 class AstroBkgInterp():
     """Astro Background Interpretation.
 
-    Attempts to compute a reasonable background estimation for 2D or 3D
-    astronomical data using a combination of interpolation and polynomial
-    fitting methods to calculate the background.
+    Computes a reasonable background estimation for 2D or 3D astronomical
+    data using a combination of interpolation and polynomial fitting
+    methods to calculate the background.
 
     Parameters
     ----------
