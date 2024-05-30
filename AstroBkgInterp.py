@@ -68,6 +68,10 @@ class AstroBkgInterp():
         2D coordinate grid. Default is 0.
     is_cube : bool
         Whether the input data is 2D or 3D.
+    err : ndarray or None
+        An error array matching the input shape. 
+    uncertainties : bool
+        Flag for whether an error array was passed in
     """
 
     def __init__(self):
@@ -100,6 +104,9 @@ class AstroBkgInterp():
         self.cube_resolution = 'high'
         
         self.pool_size = 1
+        
+        self.err = None
+        self.uncertainties = False
 
         return
 
@@ -139,6 +146,8 @@ class AstroBkgInterp():
                  f"    pool_size: {self.pool_size}\n")
         else:
             print(f"Multiprocessing: {False}\n")
+            
+        print(f"Uncertainties: {self.uncertainties}\n")
             
 
     def get_basis(self,x, y, max_order=4):
@@ -191,11 +200,19 @@ class AstroBkgInterp():
             k: max order of polynomial
 
             s: size of dither region
-
+        
+        returns:
+            fitted_bkg : ndarray
+                The final fitted background array. 
+            fitted_err : ndarray
+                The Mean Squared Error (MSE) of the fitted background array. 
         """
+        
         n = (z.shape[0]+1-size) * (z.shape[1]+1-size)
 
         cube = np.zeros((n, z.shape[0],z.shape[1]))*np.nan
+        errcube = np.zeros((n, z.shape[0],z.shape[1]))*np.nan
+
 
         count = 0
         
@@ -226,15 +243,22 @@ class AstroBkgInterp():
                 # Calculate the fitted surface from the coefficients, c.
                 fit = np.sum(c[:, None, None] * np.array(self.get_basis(X, Y, max_order))
                                 .reshape(len(basis), *X.shape), axis=0)
+                
+                errs = np.sum(r[:, None, None] * np.array(self.get_basis(X, Y, max_order))
+                                .reshape(len(basis), *X.shape), axis=0)
 
                 cube[count,j-size:j,i-size:i] = fit
+                errcube[count,j-size:j,i-size:i] = errs
                 
                 count+=1
+        
+        fitted_bkg = np.nanmedian(cube,axis=0)
+        fitted_errs = np.nanmean(errcube,axis=0) # Mean Squared Error
+        
+        return fitted_bkg, fitted_errs
 
-        return np.nanmedian(cube,axis=0)
 
-
-    def interpolate_source(self, data, center):
+    def interpolate_source(self, data, center, is_err=False):
         """Interpolate the sky underneath the source.
 
         Interpolates the pixel values in the region interior to the
@@ -248,6 +272,9 @@ class AstroBkgInterp():
 
         center: Tuple[float, float]
             The (x,y) coordinates of the source.
+            
+        is_err: bool
+            Whether data is an error array.
 
         Returns:
         --------
@@ -275,11 +302,23 @@ class AstroBkgInterp():
         if mask_type == 'circular':
             # iterate over the rows and compute the median of the pixels in the annulus
             for i in range(0, m):
-                temp[i] = np.nanmedian(polarImage[i, r:r + ann_width])
+                if is_err:
+                    # add uncertainties of annulus in quadrature
+                    temp[i] = np.sqrt(np.sum([polarImage[i,r+j]**2 for j in range(ann_width)]))
+                else:
+                    temp[i] = np.nanmedian(polarImage[i, r:r + ann_width])
 
             # perform a linear interpolation between the median values of the opposite rows in the polar image.
             for i in range(0, m):
-                new_row = np.linspace(temp[i], temp[i - half], r * 2)
+                
+                if is_err:
+                    # add uncertainties of aperture edges in quad because there is a subtraction
+                    # in this step
+                    sigma = np.sqrt(temp[i]**2 + temp[i - half]**2)
+                    new_row = np.ones(r*2)*sigma
+                else:
+                    new_row = np.linspace(temp[i], temp[i - half], r * 2)
+                
 
                 # fill in the left and right halves of the row in the polar image with the interpolated values.
                 polarImage[i, :r] = new_row[r - 1::-1]
@@ -298,14 +337,20 @@ class AstroBkgInterp():
 
             # mask aperture based on annulus
             for i in range(polarImage.shape[0]):
-                polarImage[i, :int(rap[i])] = np.nanmedian(polarImage[i, int(rap[i]):int(rann[i])])
+                if is_err:
+                    
+                    # add uncertainties of annulus in quadrature
+                    polarImage[i, :int(rap[i])] = np.sqrt(np.sum([polarImage[i, int(rap[i])+j]**2 for j in range(int(rann[i]))]))
+
+                else:
+                    polarImage[i, :int(rap[i])] = np.nanmedian(polarImage[i, int(rap[i]):int(rann[i])])
 
         # convert the filtered polar image back cartesian coordinates
         cartesianImage = ptSettings.convertToCartesianImage(polarImage)
 
         return cartesianImage
 
-    def mask_source(self, data):
+    def mask_source(self, data, is_err=False):
         """Mask the source using interpolated background.
 
         Masks the source in the input data by interpolating the background
@@ -317,6 +362,8 @@ class AstroBkgInterp():
         ----------
         data : ndarray
             The 2D input data to be masked.
+        is_err: bool
+            Whether data is an error array.
 
         Returns
         -------
@@ -331,11 +378,16 @@ class AstroBkgInterp():
         for i in range(-1, 2):
             for j in range(-1, 2):
                 center = [self.src_x + i, self.src_y + j]  # coordinates of shifted copy
-                dither = self.interpolate_source(data, center)  # interpolate shifted copy
+                dither = self.interpolate_source(data, center, is_err=is_err)  # interpolate shifted copy
                 dithers.append(dither)
 
         # take the median of the shifted copies
-        new_data = np.nanmedian(np.array(dithers), axis=0)
+        if is_err:
+            # add uncertainties in quadrature
+            dithers2 = np.array(dithers)**2
+            new_data = np.sqrt(np.sum(dithers2,axis=0))
+        else:
+            new_data = np.nanmedian(np.array(dithers), axis=0)
 
         # convolve with kernel if one was passed in
         if self.kernel is not None:
@@ -463,36 +515,49 @@ class AstroBkgInterp():
         if not self.is_cube:
             im = self.data
             im = self.interp_nans(im[0])
+            if self.uncertainties:
+                err = self.err
         else:
             im = self.data[int(i)].copy()
             im = self.interp_nans(im)
+            if self.uncertainties:
+                err =self.err[int(i)].copy()
 
         #nanmask = np.ma.masked_where(im==0,im)
         masked_bkg = self.mask_source(im)
-
         masked_bkg = np.array([masked_bkg])
-        
+       
+        if self.uncertainties:
+            masked_err = self.mask_source(err, is_err=True)
+            masked_err = np.array([masked_err])
+              
         if self.bkg_mode == 'polynomial':
 
-            bkg = self.polyfit2d_cube(masked_bkg[0],self.k,self.bin_size)
+            bkg, res = self.polyfit2d_cube(masked_bkg[0],self.k,self.bin_size)
+            
+            if self.uncertainties:
+                bkg_err = np.sqrt(masked_err**2+res**2)
 
             if self.combine_fits:
                 bkg_simple = self.simple_median_bkg(masked_bkg[0], v_wht=self.v_wht_s, h_wht=self.h_wht_s)
                 bkg = self.normalize_poly(bkg, bkg_simple)
 
-            diff = im - bkg
-
         elif self.bkg_mode == 'simple':
             bkg = self.simple_median_bkg(masked_bkg[0], v_wht=self.v_wht_s, h_wht=self.h_wht_s)
-            diff = im - bkg
 
         else:
             bkg = masked_bkg[0]
-            diff = im - bkg
-            
-        return diff, bkg, masked_bkg
 
-    def run(self, data):
+        diff = im - bkg
+        
+        if self.uncertainties:
+            diff_err = np.sqrt(err**2 + bkg_err**2)
+        else:
+            diff_err = None
+            
+        return diff, bkg, masked_bkg, diff_err#, masked_err, bkg_err
+
+    def run(self, data, err=None):
         """Run background subtraction.
 
         Runs the background subtraction on the input data using the chosen
@@ -513,6 +578,11 @@ class AstroBkgInterp():
             The 2D or 3D source-masked data.
         """
 
+        
+        if err is not None:
+            self.err = err
+            self.uncertainties = True
+        
         self.print_inputs()
 
         ndims = len(data.shape)
@@ -522,15 +592,17 @@ class AstroBkgInterp():
             masked_bkgs = np.zeros_like(data)
             bkgs = np.zeros_like(data)
             diffs = np.zeros_like(data)
+            errs = np.zeros_like(err)
             self.is_cube = True
         else:
             k = 1
             data = np.array([data])
+            err = np.array([err])
 
         # Loop over each slice.
         self.data = data
         if k == 1:
-            diffs, bkgs, masks = self.process(0)
+            diffs, bkgs, masks, errs = self.process(0)#merrs, berrs 
         else:
             p = Pool(self.pool_size)
             idx = np.arange(k)
@@ -542,12 +614,22 @@ class AstroBkgInterp():
             diffs = results[:,0]
             bkgs = results[:,1]
             masks = results[:,2]
+            errs = results[:,3]
+            # merrs = results[:,4]
+            # berrs = results[:,5]
 
         masked_bkg = np.array(masks)
         bkg = np.array(bkgs)
         diff = np.array(diffs)
+        err = np.array(errs)
+        # merr = np.array(merrs)
+        # berr = np.array(berrs)
+        
 
         if not self.is_cube:
             masked_bkg = masked_bkg[0]
+            err = err[0]
+            # merr = merr[0]
+            # berr = berr[0]
 
-        return diff, bkg, masked_bkg
+        return diff, bkg, masked_bkg, err#,merr,berr
