@@ -2,8 +2,8 @@
 # Authors:
 #     Bryony Nickson
 #     Michael Engesser
-#     Kirsten Larson
 #     Justin Pierel
+#     Kirsten Larson
 # ===================
 
 # Native Imports
@@ -82,6 +82,9 @@ class AstroBkgInterp():
 
         self.aper_rad = 5
         self.ann_width = 5
+
+        self.fwhm = None
+        self.fwhm_scale = 1.25
 
         self.semi_major = 6
         self.semi_minor = 4
@@ -244,16 +247,16 @@ class AstroBkgInterp():
                 fit = np.sum(c[:, None, None] * np.array(self.get_basis(X, Y, max_order))
                                 .reshape(len(basis), *X.shape), axis=0)
                 
-                errs = np.sum(r[:, None, None] * np.array(self.get_basis(X, Y, max_order))
-                                .reshape(len(basis), *X.shape), axis=0)
+                # errs = np.sum(r[:, None, None] * np.array(self.get_basis(X, Y, max_order))
+                #                 .reshape(len(basis), *X.shape), axis=0)
 
                 cube[count,j-size:j,i-size:i] = fit
-                errcube[count,j-size:j,i-size:i] = errs
+                # errcube[count,j-size:j,i-size:i] = errs
                 
                 count+=1
         
         fitted_bkg = np.nanmedian(cube,axis=0)
-        fitted_errs = np.nanmean(errcube,axis=0) # Mean Squared Error
+        fitted_errs = np.ones_like(fitted_bkg)#np.nanmean(errcube,axis=0) # Mean Squared Error
         
         return fitted_bkg, fitted_errs
 
@@ -370,8 +373,6 @@ class AstroBkgInterp():
         conv_bkg : ndarray
             The 2D output data after applying the mask and convolution.
         """
-
-
         dithers = []  # list of masked data for each dither
 
         # iterate through neighboring pixels
@@ -523,14 +524,16 @@ class AstroBkgInterp():
             if self.uncertainties:
                 err =self.err[int(i)].copy()
 
-        #nanmask = np.ma.masked_where(im==0,im)
-        masked_bkg = self.mask_source(im)
-        masked_bkg = np.array([masked_bkg])
-       
+        if self.fwhm is not None:
+            self.aper_rad = int(np.ceil(self.fwhm_scale * self.fwhm[i]))
         if self.uncertainties:
             masked_err = self.mask_source(err, is_err=True)
             masked_err = np.array([masked_err])
-              
+
+        #nanmask = np.ma.masked_where(im==0,im)
+        masked_bkg = self.mask_source(im)
+        masked_bkg = np.array([masked_bkg])
+
         if self.bkg_mode == 'polynomial':
 
             bkg, res = self.polyfit2d_cube(masked_bkg[0],self.k,self.bin_size)
@@ -555,7 +558,7 @@ class AstroBkgInterp():
         else:
             diff_err = None
             
-        return diff, bkg, masked_bkg, diff_err#, masked_err, bkg_err
+        return diff, bkg, masked_bkg#, diff_err#, masked_err, bkg_err
 
     def run(self, data, err=None):
         """Run background subtraction.
@@ -608,20 +611,21 @@ class AstroBkgInterp():
             idx = np.arange(k)
             # diffs, bkgs, masks = p.map(self.process,idx)
             results = p.map(self.process,idx)
-        
-            results = np.array(results)
 
-            diffs = results[:,0]
-            bkgs = results[:,1]
-            masks = results[:,2]
-            errs = results[:,3]
+            diffs,bkgs,masks = zip(*results)
+            # results = np.array(results)
+
+            # diffs = results[:,0]
+            # bkgs = results[:,1]
+            # masks = results[:,2]
+            #errs = results[:,3]
             # merrs = results[:,4]
             # berrs = results[:,5]
 
         masked_bkg = np.array(masks)
         bkg = np.array(bkgs)
         diff = np.array(diffs)
-        err = np.array(errs)
+        # err = np.array(errs)
         # merr = np.array(merrs)
         # berr = np.array(berrs)
         
@@ -632,4 +636,4 @@ class AstroBkgInterp():
             # merr = merr[0]
             # berr = berr[0]
 
-        return diff, bkg, masked_bkg, err#,merr,berr
+        return diff, bkg, masked_bkg#, err#,merr,berr
